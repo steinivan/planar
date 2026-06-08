@@ -105,7 +105,7 @@ Then wire up the hooks in your Claude Code settings (`~/.claude/settings.json` f
 }
 ```
 
-The `SessionStart` hook is optional but recommended — it teaches Claude the `planar-graph` convention so the graph view works with zero per-project setup. On Windows, use the full path: `"command": "C:\\Users\\<you>\\.planar\\planar.exe"` (and `"...planar.exe session-context"`).
+The `SessionStart` hook is optional but recommended — it teaches Claude the `planar-graph` convention so the graph view works with zero per-project setup. On Windows, use the full path with **forward slashes** — Claude Code may run the hook through a shell where backslashes are escape characters: `"command": "C:/Users/<you>/.planar/planar.exe"` (and `"...planar.exe session-context"`).
 
 For the `/diff-review` slash command, create `~/.claude/commands/diff-review.md` — see `install.sh` for the template.
 

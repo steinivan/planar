@@ -22,53 +22,58 @@ Write-Host "==> Configuring Claude Code hook..." -ForegroundColor Green
 $ClaudeDir = Split-Path $ClaudeSettings
 New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
 
-$HookCmd = "$PlanarDir\planar.exe"
+# Forward slashes: Claude Code may run the hook command through a POSIX-style
+# shell where backslashes are escape characters; "/" works on Windows for an
+# executable path and avoids that.
+$HookCmd = ("$PlanarDir\planar.exe") -replace '\\', '/'
 
-$settings = @{}
+# Merge into the existing settings.json, preserving every other setting and any
+# non-Planar hooks. Uses ConvertFrom-Json (PSCustomObject) instead of
+# `-AsHashtable`, which does NOT exist on Windows PowerShell 5.1 — there it threw
+# and the catch silently reset settings to empty, wiping the user's config.
+$settings = $null
 if (Test-Path $ClaudeSettings) {
-    try {
-        $settings = Get-Content $ClaudeSettings -Raw | ConvertFrom-Json -AsHashtable
-    } catch {}
+    try { $settings = Get-Content $ClaudeSettings -Raw | ConvertFrom-Json } catch { $settings = $null }
+}
+if ($null -eq $settings) { $settings = [PSCustomObject]@{} }
+
+function Set-Prop($obj, $name, $value) {
+    if ($obj.PSObject.Properties.Name -contains $name) { $obj.$name = $value }
+    else { $obj | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force }
 }
 
-if (-not $settings.ContainsKey("hooks")) { $settings["hooks"] = @{} }
-if (-not $settings["hooks"].ContainsKey("PermissionRequest")) { $settings["hooks"]["PermissionRequest"] = @() }
-
-# Remove any existing Planar hook to avoid duplicates
-$settings["hooks"]["PermissionRequest"] = @(
-    $settings["hooks"]["PermissionRequest"] | Where-Object {
-        -not ($_.matcher -eq "ExitPlanMode" -and ($_.hooks | Where-Object { $_.command -like "*.planar*" }))
-    }
-)
-
-$settings["hooks"]["PermissionRequest"] += @{
-    matcher = "ExitPlanMode"
-    hooks = @(
-        @{
-            type = "command"
-            command = $HookCmd
-            timeout = 345600
-        }
-    )
+# Drop existing Planar entries (command path contains ".planar") from a hook array.
+function Remove-PlanarEntries($arr) {
+    if ($null -eq $arr) { return @() }
+    return @($arr | Where-Object {
+        $cmds = @($_.hooks | ForEach-Object { $_.command })
+        -not ($cmds -like '*.planar*')
+    })
 }
 
-# SessionStart hook: teaches Claude the planar-graph convention
-if (-not $settings["hooks"].ContainsKey("SessionStart")) { $settings["hooks"]["SessionStart"] = @() }
-$settings["hooks"]["SessionStart"] = @(
-    $settings["hooks"]["SessionStart"] | Where-Object {
-        -not ($_.hooks | Where-Object { $_.command -like "*.planar*" })
-    }
-)
-$settings["hooks"]["SessionStart"] += @{
-    hooks = @(
-        @{
-            type = "command"
-            command = "$HookCmd session-context"
-        }
-    )
+if (-not ($settings.PSObject.Properties.Name -contains 'hooks') -or $null -eq $settings.hooks) {
+    Set-Prop $settings 'hooks' ([PSCustomObject]@{})
 }
+$hooks = $settings.hooks
 
-$settings | ConvertTo-Json -Depth 10 | Set-Content $ClaudeSettings -Encoding UTF8
+# PermissionRequest -> ExitPlanMode. Wrap in @(...) so a single surviving entry
+# stays an array (PowerShell unwraps 1-element arrays returned from a function,
+# which would break the += below).
+$pr = @(Remove-PlanarEntries $hooks.PermissionRequest)
+$pr += [PSCustomObject]@{
+    matcher = 'ExitPlanMode'
+    hooks   = @([PSCustomObject]@{ type = 'command'; command = $HookCmd; timeout = 345600 })
+}
+Set-Prop $hooks 'PermissionRequest' @($pr)
+
+# SessionStart -> teaches Claude the planar-graph convention
+$ss = @(Remove-PlanarEntries $hooks.SessionStart)
+$ss += [PSCustomObject]@{
+    hooks = @([PSCustomObject]@{ type = 'command'; command = "$HookCmd session-context" })
+}
+Set-Prop $hooks 'SessionStart' @($ss)
+
+$settings | ConvertTo-Json -Depth 12 | Set-Content $ClaudeSettings -Encoding UTF8
 
 Write-Host "==> Done! Planar is installed and configured." -ForegroundColor Green
 Write-Host ""
