@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+test-results/
+playwright-report/
+/planar
+/planar.exe
+*.bun-build
+DESINSTALAR-LOCAL.md
+manual-test-roles.json
+docs
+example

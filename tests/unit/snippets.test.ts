@@ -1,0 +1,205 @@
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import {
+  extractFileRefs,
+  resolveSnippets,
+} from "../../packages/server/snippets";
+import { mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+describe("extractFileRefs", () => {
+  test("extracts simple file path", () => {
+    const refs = extractFileRefs("Modify `src/index.ts` to add the feature");
+    expect(refs).toHaveLength(1);
+    expect(refs[0].path).toBe("src/index.ts");
+    expect(refs[0].startLine).toBeUndefined();
+  });
+
+  test("extracts file path with single line number", () => {
+    const refs = extractFileRefs("See `src/utils.ts:42` for details");
+    expect(refs).toHaveLength(1);
+    expect(refs[0].path).toBe("src/utils.ts");
+    expect(refs[0].startLine).toBe(42);
+    expect(refs[0].endLine).toBe(42);
+  });
+
+  test("extracts file path with line range", () => {
+    const refs = extractFileRefs(
+      "Update `lib/auth.ts:10-25` with the new logic",
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0].path).toBe("lib/auth.ts");
+    expect(refs[0].startLine).toBe(10);
+    expect(refs[0].endLine).toBe(25);
+  });
+
+  test("extracts multiple file refs", () => {
+    const md = "Modify `src/a.ts` and `src/b.js` then check `config.json`";
+    const refs = extractFileRefs(md);
+    expect(refs).toHaveLength(3);
+    expect(refs.map((r) => r.path)).toEqual([
+      "src/a.ts",
+      "src/b.js",
+      "config.json",
+    ]);
+  });
+
+  test("deduplicates same file reference", () => {
+    const md = "First `src/app.ts`, then again `src/app.ts`";
+    const refs = extractFileRefs(md);
+    expect(refs).toHaveLength(1);
+  });
+
+  test("ignores non-file backtick content", () => {
+    const md = "Run `npm install` and `git status` then `true`";
+    const refs = extractFileRefs(md);
+    expect(refs).toHaveLength(0);
+  });
+
+  test("ignores paths inside fenced code blocks", () => {
+    const md =
+      "Modify `src/real.ts` here\n\n```typescript\nimport from 'src/inside-code.ts'\n```\n\nAlso `src/other.ts`";
+    const refs = extractFileRefs(md);
+    expect(refs).toHaveLength(2);
+    expect(refs.map((r) => r.path)).toEqual(["src/real.ts", "src/other.ts"]);
+  });
+
+  test("handles various extensions", () => {
+    const md = "`app.py` `main.go` `style.css` `page.svelte` `schema.sql`";
+    const refs = extractFileRefs(md);
+    expect(refs).toHaveLength(5);
+  });
+
+  test("ignores unknown extensions", () => {
+    const md = "`file.xyz` `data.unknown`";
+    const refs = extractFileRefs(md);
+    expect(refs).toHaveLength(0);
+  });
+});
+
+describe("resolveSnippets", () => {
+  const tmpDir = join(tmpdir(), `planar-test-snippets-${Date.now()}`);
+
+  beforeAll(() => {
+    mkdirSync(join(tmpDir, "src"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "src/small.ts"),
+      Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n"),
+    );
+    writeFileSync(
+      join(tmpDir, "src/large.ts"),
+      Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join("\n"),
+    );
+  });
+
+  afterAll(() => {
+    try {
+      rmSync(tmpDir, { recursive: true });
+    } catch {}
+  });
+
+  test("resolves small file content", async () => {
+    const snippets = await resolveSnippets("Check `src/small.ts`", tmpDir);
+    expect(snippets).toHaveLength(1);
+    expect(snippets[0].path).toBe("src/small.ts");
+    expect(snippets[0].content).toContain("line 1");
+    expect(snippets[0].error).toBeUndefined();
+  });
+
+  test("returns large files in full without truncation", async () => {
+    const snippets = await resolveSnippets("Check `src/large.ts`", tmpDir);
+    expect(snippets).toHaveLength(1);
+    expect(snippets[0].error).toBeUndefined();
+    expect(snippets[0].content.split("\n").length).toBe(300);
+  });
+
+  test("extracts line range with context", async () => {
+    const snippets = await resolveSnippets("See `src/small.ts:3-5`", tmpDir);
+    expect(snippets).toHaveLength(1);
+    // With 5 lines of context: start = max(1, 3-5) = 1, end = min(10, 5+5) = 10
+    expect(snippets[0].startLine).toBe(1);
+    expect(snippets[0].endLine).toBe(10);
+    expect(snippets[0].content).toContain("line 1");
+  });
+
+  test("handles missing file", async () => {
+    const snippets = await resolveSnippets("Check `src/missing.ts`", tmpDir);
+    expect(snippets).toHaveLength(1);
+    expect(snippets[0].error).toBe("File not found");
+    expect(snippets[0].content).toBe("");
+  });
+
+  test("rejects path traversal", async () => {
+    const snippets = await resolveSnippets(
+      "Check `../../etc/secret.ts`",
+      tmpDir,
+    );
+    expect(snippets).toHaveLength(1);
+    // realpath throws for nonexistent paths, caught as "File not found"
+    expect(snippets[0].error).toBe("File not found");
+    expect(snippets[0].content).toBe("");
+  });
+
+  test("rejects an existing file outside the project directory", async () => {
+    // A real file in a sibling directory: realpath() succeeds, so this exercises
+    // the containment check (not the "File not found" path). Guards the Windows
+    // regression where a hardcoded "/" separator rejected every path.
+    const sibling = join(tmpdir(), `planar-test-outside-${Date.now()}`);
+    mkdirSync(sibling, { recursive: true });
+    writeFileSync(join(sibling, "secret.ts"), "const token = 1;");
+    try {
+      const rel = `../${sibling.split(/[\\/]/).pop()}/secret.ts`;
+      const snippets = await resolveSnippets(`Check \`${rel}\``, tmpDir);
+      expect(snippets).toHaveLength(1);
+      expect(snippets[0].error).toBe("Path outside project directory");
+      expect(snippets[0].content).toBe("");
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a symlink that escapes the project directory", async () => {
+    // A symlink inside the project pointing at a file outside it. realpath()
+    // resolves it to the outside target, so the containment check must reject
+    // it — guards against symlink-based path escapes.
+    const outside = join(tmpdir(), `planar-test-symtarget-${Date.now()}`);
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "secret.ts"), "const token = 1;");
+    let linkCreated = false;
+    try {
+      symlinkSync(join(outside, "secret.ts"), join(tmpDir, "src/link.ts"));
+      linkCreated = true;
+    } catch {
+      // Creating symlinks can require privileges (e.g. Windows without
+      // Developer Mode). Skip the assertion when we can't create one.
+    }
+    try {
+      if (linkCreated) {
+        const snippets = await resolveSnippets("Check `src/link.ts`", tmpDir);
+        expect(snippets).toHaveLength(1);
+        expect(snippets[0].error).toBe("Path outside project directory");
+        expect(snippets[0].content).toBe("");
+      }
+    } finally {
+      try {
+        rmSync(join(tmpDir, "src/link.ts"), { force: true });
+      } catch {}
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("enforces total resolution budget across many missing files", async () => {
+    // 200 distinct missing refs; realpath() failures are quick but we still
+    // want the loop to exit cleanly even if it would otherwise take a while.
+    const refs = Array.from(
+      { length: 200 },
+      (_, i) => `\`src/missing-${i}.ts\``,
+    ).join(" ");
+    const start = Date.now();
+    const snippets = await resolveSnippets(refs, tmpDir);
+    const elapsed = Date.now() - start;
+    // Budget cap is 5s — should never exceed it by much (allow 1s slack).
+    expect(elapsed).toBeLessThan(6000);
+    expect(snippets.length).toBe(200);
+  });
+});

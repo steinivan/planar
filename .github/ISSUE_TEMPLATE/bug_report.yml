@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in Planar misbehaves — a broken review, a crash, wrong output.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The more concrete the repro, the faster this gets fixed.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before filing
+      options:
+        - label: I'm on the latest Planar (I re-ran the install command)
+          required: true
+        - label: I searched existing issues
+          required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What went wrong
+      description: What you saw versus what you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: The smallest set of steps that triggers it.
+      placeholder: |
+        1. printf '...' | ./planar
+        2. press `g` / click ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Terminal output
+      description: Anything Planar printed to the terminal (it logs to stderr).
+      render: shell
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS (Apple silicon)
+        - macOS (Intel)
+        - Linux (x64)
+        - Windows (x64)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Output of `~/.planar/planar --version`."
+      placeholder: v0.1.0
+    validations:
+      required: true

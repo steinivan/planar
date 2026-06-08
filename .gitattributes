@@ -1,0 +1,10 @@
+# Normalize line endings to LF in the repo on all platforms. Without this a
+# Windows checkout can store CRLF, which makes `bun run format:check` (Prettier
+# defaults to LF) fail locally and shows up as noise in diffs/CI.
+* text=auto eol=lf
+
+# Binary assets — never normalize.
+*.png binary
+*.gif binary
+*.mp4 binary
+*.ico binary

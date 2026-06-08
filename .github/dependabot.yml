@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Bun/npm dependencies across the monorepo.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Batch low-risk dev/test tooling into one PR to cut noise.
+      dev-tooling:
+        patterns:
+          - "prettier*"
+          - "@playwright/*"
+          - "svelte-check"
+          - "typescript"
+
+  # Keep GitHub Actions pinned versions fresh.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
